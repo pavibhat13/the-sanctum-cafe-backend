@@ -61,7 +61,7 @@ router.post('/', authenticateToken, [
   body('items.*.menuItem').isMongoId().withMessage('Invalid menu item ID'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
   body('items.*.specialInstructions').optional().isLength({ max: 200 }).withMessage('Special instructions too long'),
-  body('orderType').isIn(['dine-in', 'take away', 'delivery']).withMessage('Invalid order type'),
+  body('orderType').isIn(['dine in', 'take away', 'delivery']).withMessage('Invalid order type'),
   body('tableNumber').optional().isInt({ min: 1 }).withMessage('Invalid table number'),
   body('paymentMethod').isIn(['cash', 'card', 'digital-wallet']).withMessage('Invalid payment method'),
   body('deliveryAddress').optional().isObject().withMessage('Invalid delivery address')
@@ -112,7 +112,7 @@ router.post('/', authenticateToken, [
       customer: req.user._id,
       items: orderItems,
       orderType,
-      tableNumber: orderType === 'dine-in' ? tableNumber : undefined,
+      tableNumber: orderType === 'dine in' ? tableNumber : undefined,
       deliveryAddress: orderType === 'delivery' ? deliveryAddress : undefined,
       paymentMethod,
       subtotal,
