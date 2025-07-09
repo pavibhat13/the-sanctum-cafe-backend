@@ -95,11 +95,23 @@ router.post('/send-order-notification', authenticateToken, async (req, res) => {
       });
     }
 
+    // Ensure orderData has proper structure for notifications
+    const enhancedOrderData = orderData ? {
+      id: orderData.id || orderData._id,
+      _id: orderData.id || orderData._id,
+      customerName: orderData.customerName || orderData.customer?.name,
+      customer: orderData.customer || { name: orderData.customerName },
+      total: orderData.total,
+      items: orderData.items || [],
+      orderType: orderData.orderType,
+      timestamp: orderData.timestamp || new Date().toISOString()
+    } : null;
+
     const payload = JSON.stringify({
       type: type || 'new_order',
       title,
       body,
-      orderData,
+      orderData: enhancedOrderData,
       timestamp: new Date().toISOString()
     });
 
@@ -166,11 +178,22 @@ router.post('/send-status-notification', authenticateToken, async (req, res) => 
       });
     }
 
+    // Ensure orderData has proper structure for status notifications
+    const enhancedOrderData = orderData ? {
+      id: orderData.id || orderData._id,
+      _id: orderData.id || orderData._id,
+      status: orderData.status,
+      customerName: orderData.customerName || orderData.customer?.name,
+      customer: orderData.customer || { name: orderData.customerName },
+      total: orderData.total,
+      timestamp: orderData.timestamp || new Date().toISOString()
+    } : null;
+
     const payload = JSON.stringify({
       type: type || 'order_status',
       title,
       body,
-      orderData,
+      orderData: enhancedOrderData,
       timestamp: new Date().toISOString()
     });
 
@@ -258,6 +281,76 @@ router.post('/test', authenticateToken, async (req, res) => {
     console.error('Error sending test notification:', error);
     res.status(500).json({
       error: 'Failed to send test notification',
+      details: error.message
+    });
+  }
+});
+
+// Test order notification endpoint (for development)
+router.post('/test-order', authenticateToken, async (req, res) => {
+  try {
+    const mockOrderData = {
+      id: 'TEST-' + Date.now(),
+      _id: 'TEST-' + Date.now(),
+      customerName: 'Test Customer',
+      customer: { name: 'Test Customer' },
+      total: '25.99',
+      items: [
+        { name: 'Test Burger', quantity: 1, price: 15.99 },
+        { name: 'Test Fries', quantity: 1, price: 5.99 },
+        { name: 'Test Drink', quantity: 1, price: 3.99 }
+      ],
+      orderType: 'delivery',
+      timestamp: new Date().toISOString()
+    };
+
+    const payload = JSON.stringify({
+      type: 'new_order',
+      title: `🆕 New Order #${mockOrderData.id}`,
+      body: `${mockOrderData.customerName} placed an order (${mockOrderData.items.length} items) for $${mockOrderData.total}`,
+      orderData: mockOrderData,
+      timestamp: new Date().toISOString()
+    });
+
+    const notifications = [];
+    let successCount = 0;
+    let failureCount = 0;
+
+    // Send to admin and employee roles
+    const targetRoles = ['admin', 'employee'];
+    for (const [userId, userData] of subscriptions.entries()) {
+      if (targetRoles.includes(userData.userRole)) {
+        try {
+          await webpush.sendNotification(userData.subscription, payload);
+          notifications.push({ userId, status: 'sent' });
+          successCount++;
+        } catch (error) {
+          console.error(`Failed to send test order notification to user ${userId}:`, error);
+          notifications.push({ userId, status: 'failed', error: error.message });
+          failureCount++;
+
+          // Remove invalid subscriptions
+          if (error.statusCode === 410) {
+            subscriptions.delete(userId);
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Test order notification processing completed',
+      mockOrderData,
+      results: {
+        successCount,
+        failureCount,
+        notifications
+      }
+    });
+  } catch (error) {
+    console.error('Error sending test order notification:', error);
+    res.status(500).json({
+      error: 'Failed to send test order notification',
       details: error.message
     });
   }
