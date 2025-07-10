@@ -79,6 +79,28 @@ const userSchema = new mongoose.Schema({
   preferences: {
     notifications: { type: Boolean, default: true },
     newsletter: { type: Boolean, default: false }
+  },
+  // Location tracking for delivery persons
+  currentLocation: {
+    latitude: {
+      type: Number,
+      min: -90,
+      max: 90
+    },
+    longitude: {
+      type: Number,
+      min: -180,
+      max: 180
+    },
+    accuracy: Number, // GPS accuracy in meters
+    lastUpdated: Date
+  },
+  // Delivery person specific fields
+  deliveryStats: {
+    totalDeliveries: { type: Number, default: 0 },
+    averageRating: { type: Number, default: 0 },
+    totalEarnings: { type: Number, default: 0 },
+    isAvailable: { type: Boolean, default: true }
   }
 }, {
   timestamps: true

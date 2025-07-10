@@ -1398,4 +1398,199 @@ router.delete('/employees/:id', authenticateToken, requireAdmin, async (req, res
   }
 });
 
+// ===== DELIVERY MANAGEMENT ROUTES =====
+
+// Assign delivery person to order
+router.patch('/orders/:orderId/assign', authenticateToken, requireEmployee, [
+  body('deliveryPersonId').isMongoId().withMessage('Valid delivery person ID is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Validation failed', 
+        errors: errors.array() 
+      });
+    }
+
+    const { orderId } = req.params;
+    const { deliveryPersonId } = req.body;
+
+    // Verify delivery person exists and is active
+    const deliveryPerson = await User.findOne({
+      _id: deliveryPersonId,
+      role: 'delivery',
+      isActive: true
+    });
+
+    if (!deliveryPerson) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Delivery person not found or inactive' 
+      });
+    }
+
+    // Find and update the order
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
+    }
+
+    // Check if order is eligible for delivery assignment
+    if (order.orderType !== 'delivery') {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Only delivery orders can be assigned to delivery persons' 
+      });
+    }
+
+    // Update order with delivery person assignment
+    order.assignedTo = deliveryPersonId;
+    order.status = 'ready for pickup'; // Set status to ready for pickup when assigned
+    order.updatedAt = new Date();
+
+    await order.save();
+    await order.populate('customer', 'name email phone');
+    await order.populate('items.menuItem', 'name price image');
+    await order.populate('assignedTo', 'name phone department');
+
+    res.json({
+      success: true,
+      message: 'Order assigned to delivery person successfully',
+      order
+    });
+  } catch (error) {
+    console.error('Error assigning delivery person:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to assign delivery person' 
+    });
+  }
+});
+
+// Get all delivery persons for assignment
+router.get('/delivery-persons', authenticateToken, requireEmployee, async (req, res) => {
+  try {
+    const deliveryPersons = await User.find({
+      role: 'delivery',
+      isActive: true
+    }).select('name phone department _id');
+
+    // Get current workload for each delivery person
+    const deliveryPersonsWithWorkload = await Promise.all(
+      deliveryPersons.map(async (person) => {
+        const activeOrders = await Order.countDocuments({
+          assignedTo: person._id,
+          status: { $in: ['ready for pickup', 'out for delivery'] }
+        });
+
+        return {
+          ...person.toObject(),
+          activeOrders
+        };
+      })
+    );
+
+    // Sort by workload (ascending) so least busy appears first
+    deliveryPersonsWithWorkload.sort((a, b) => a.activeOrders - b.activeOrders);
+
+    res.json({
+      success: true,
+      deliveryPersons: deliveryPersonsWithWorkload
+    });
+  } catch (error) {
+    console.error('Error fetching delivery persons:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to fetch delivery persons' 
+    });
+  }
+});
+
+// Get delivery statistics for admin dashboard
+router.get('/delivery-stats', authenticateToken, requireEmployee, async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const [
+      totalDeliveryOrders,
+      todayDeliveryOrders,
+      pendingDeliveries,
+      outForDelivery,
+      deliveredToday,
+      avgDeliveryTime
+    ] = await Promise.all([
+      Order.countDocuments({ orderType: 'delivery' }),
+      Order.countDocuments({ 
+        orderType: 'delivery',
+        createdAt: { $gte: today, $lt: tomorrow }
+      }),
+      Order.countDocuments({ 
+        orderType: 'delivery',
+        status: 'ready for pickup'
+      }),
+      Order.countDocuments({ 
+        orderType: 'delivery',
+        status: 'out for delivery'
+      }),
+      Order.countDocuments({ 
+        orderType: 'delivery',
+        status: 'delivered',
+        actualDeliveryTime: { $gte: today, $lt: tomorrow }
+      }),
+      Order.aggregate([
+        {
+          $match: {
+            orderType: 'delivery',
+            status: 'delivered',
+            estimatedDeliveryTime: { $exists: true },
+            actualDeliveryTime: { $exists: true }
+          }
+        },
+        {
+          $project: {
+            deliveryTime: {
+              $divide: [
+                { $subtract: ['$actualDeliveryTime', '$estimatedDeliveryTime'] },
+                1000 * 60 // Convert to minutes
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            avgTime: { $avg: '$deliveryTime' }
+          }
+        }
+      ])
+    ]);
+
+    res.json({
+      success: true,
+      stats: {
+        totalDeliveryOrders,
+        todayDeliveryOrders,
+        pendingDeliveries,
+        outForDelivery,
+        deliveredToday,
+        avgDeliveryTime: avgDeliveryTime[0]?.avgTime || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching delivery stats:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to fetch delivery statistics' 
+    });
+  }
+});
+
 module.exports = router;
