@@ -60,18 +60,20 @@ const defaultSettings = [
     value: true,
     description: 'Enable delivery service'
   },
-  {
-    category: 'delivery',
-    key: 'freeDeliveryThreshold',
-    value: 25.00,
-    description: 'Minimum order amount for free delivery'
-  },
-  {
-    category: 'delivery',
-    key: 'deliveryFee',
-    value: 3.99,
-    description: 'Standard delivery fee'
-  },
+  // Commented out - delivery is now always free
+  // {
+  //   category: 'delivery',
+  //   key: 'freeDeliveryThreshold',
+  //   value: 25.00,
+  //   description: 'Minimum order amount for free delivery'
+  // },
+  // Commented out - delivery is now free
+  // {
+  //   category: 'delivery',
+  //   key: 'deliveryFee',
+  //   value: 3.99,
+  //   description: 'Standard delivery fee'
+  // },
   {
     category: 'delivery',
     key: 'maxDeliveryDistance',

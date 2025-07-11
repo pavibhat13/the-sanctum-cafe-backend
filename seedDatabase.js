@@ -1184,7 +1184,8 @@ async function seedDatabase() {
       const subtotal = randomItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
       const tax = subtotal * 0.0875; // 8.75% tax
       const orderType = orderTypes[Math.floor(Math.random() * orderTypes.length)];
-      const deliveryFee = orderType === 'delivery' ? (Math.random() > 0.5 ? 3.99 : 5.99) : 0;
+      // const deliveryFee = orderType === 'delivery' ? (Math.random() > 0.5 ? 3.99 : 5.99) : 0; // Commented out - delivery is now free
+      const deliveryFee = 0; // Delivery is now free
       const tip = Math.random() > 0.3 ? Math.round((subtotal * (0.1 + Math.random() * 0.1)) * 100) / 100 : 0;
       const total = subtotal + deliveryFee + tip;
 

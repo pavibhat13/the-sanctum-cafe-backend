@@ -1318,6 +1318,7 @@ router.put('/employees/:id', authenticateToken, requireAdmin, async (req, res) =
     const {
       name,
       email,
+      password,
       role,
       department,
       phone,
@@ -1341,17 +1342,25 @@ router.put('/employees/:id', authenticateToken, requireAdmin, async (req, res) =
       }
     }
 
+    // Prepare update data
+    const updateData = {
+      name,
+      email,
+      role,
+      department,
+      phone,
+      address,
+      isActive
+    };
+
+    // Only include password if it's provided and not empty
+    if (password && password.trim() !== '') {
+      updateData.password = password;
+    }
+
     const employee = await User.findByIdAndUpdate(
       req.params.id,
-      {
-        name,
-        email,
-        role,
-        department,
-        phone,
-        address,
-        isActive
-      },
+      updateData,
       { new: true, runValidators: true }
     ).select('-password');
 

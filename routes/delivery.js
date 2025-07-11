@@ -418,7 +418,7 @@ router.get('/track/:orderId', authenticateToken, async (req, res) => {
         quantity: item.quantity,
         price: item.price
       })),
-      total: order.totalAmount
+      total: order.total
     };
 
     // Add delivery person info if assigned and order is out for delivery
