@@ -3,9 +3,12 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const http = require('http');
+const socketIo = require('socket.io');
 require('dotenv').config();
 
 const app = express();
+const server = http.createServer(app);
 
 // Security middleware
 app.use(helmet());
@@ -74,6 +77,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/delivery', require('./routes/delivery'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/analytics', require('./routes/cart-tracking'));
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -98,11 +102,45 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Socket.IO configuration
+const io = socketIo(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('👤 Client connected:', socket.id);
+  
+  // Join admin room for real-time analytics
+  socket.on('join_admin', () => {
+    socket.join('admin');
+    console.log('👨‍💼 Admin joined analytics room:', socket.id);
+  });
+  
+  // Leave admin room
+  socket.on('leave_admin', () => {
+    socket.leave('admin');
+    console.log('👨‍💼 Admin left analytics room:', socket.id);
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('👤 Client disconnected:', socket.id);
+  });
+});
+
+// Make io available globally
+module.exports.io = io;
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📱 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔌 WebSocket server ready for real-time analytics`);
 });
 
 module.exports = app;

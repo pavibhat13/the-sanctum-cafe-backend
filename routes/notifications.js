@@ -307,7 +307,7 @@ router.post('/test-order', authenticateToken, async (req, res) => {
     const payload = JSON.stringify({
       type: 'new_order',
       title: `🆕 New Order #${mockOrderData.id}`,
-      body: `${mockOrderData.customerName} placed an order (${mockOrderData.items.length} items) for $${mockOrderData.total}`,
+      body: `${mockOrderData.customerName} placed an order (${mockOrderData.items.length} items) for ₹${mockOrderData.total}`,
       orderData: mockOrderData,
       timestamp: new Date().toISOString()
     });

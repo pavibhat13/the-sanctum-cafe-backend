@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
+const CustomerActivityService = require('../services/customerActivityService');
 const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
@@ -40,6 +41,20 @@ router.post('/customer-login', [
         await user.save();
 
         const token = generateToken(user._id);
+        
+        // Track login activity
+        try {
+          const sessionId = `session_${user._id}_${Date.now()}`;
+          await CustomerActivityService.trackLogin(user._id, sessionId, {
+            loginMethod: 'mobile',
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('User-Agent'),
+            metadata: { mobile, loginTime: new Date() }
+          });
+        } catch (activityError) {
+          console.error('Error tracking login activity:', activityError);
+          // Don't fail login if activity tracking fails
+        }
 
         return res.json({
           message: 'Login successful',
@@ -72,6 +87,20 @@ router.post('/customer-login', [
         await newUser.save();
 
         const token = generateToken(newUser._id);
+        
+        // Track login activity for new user
+        try {
+          const sessionId = `session_${newUser._id}_${Date.now()}`;
+          await CustomerActivityService.trackLogin(newUser._id, sessionId, {
+            loginMethod: 'mobile',
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('User-Agent'),
+            metadata: { mobile, loginTime: new Date(), isNewUser: true }
+          });
+        } catch (activityError) {
+          console.error('Error tracking new user login activity:', activityError);
+          // Don't fail login if activity tracking fails
+        }
 
         return res.status(201).json({
           message: 'Account created and login successful',
@@ -144,6 +173,22 @@ router.post('/login', [
 
     // Generate token
     const token = generateToken(user._id);
+    
+    // Track login activity (only for customers)
+    if (user.role === 'customer') {
+      try {
+        const sessionId = `session_${user._id}_${Date.now()}`;
+        await CustomerActivityService.trackLogin(user._id, sessionId, {
+          loginMethod: 'email',
+          ipAddress: req.ip || req.connection.remoteAddress,
+          userAgent: req.get('User-Agent'),
+          metadata: { identifier, loginTime: new Date() }
+        });
+      } catch (activityError) {
+        console.error('Error tracking login activity:', activityError);
+        // Don't fail login if activity tracking fails
+      }
+    }
 
     res.json({
       message: 'Login successful',

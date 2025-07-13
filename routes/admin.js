@@ -4,7 +4,9 @@ const User = require('../models/User');
 const Order = require('../models/Order');
 const MenuItem = require('../models/MenuItem');
 const Inventory = require('../models/Inventory');
+const CustomerActivity = require('../models/CustomerActivity');
 const InventoryService = require('../services/inventoryService');
+const CustomerActivityService = require('../services/customerActivityService');
 const { authenticateToken, requireAdmin, requireEmployee } = require('../middleware/auth');
 
 const router = express.Router();
@@ -301,6 +303,173 @@ router.get('/analytics/order-status', authenticateToken, requireAdmin, async (re
   } catch (error) {
     console.error('Order status analytics error:', error);
     res.status(500).json({ message: 'Failed to fetch order status analytics' });
+  }
+});
+
+// Get delivery statistics
+router.get('/delivery/stats', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const [
+      deliveryOrders,
+      pendingDeliveries,
+      outForDelivery,
+      deliveredToday,
+      totalDeliveryPersons,
+      activeDeliveryPersons
+    ] = await Promise.all([
+      // Today's delivery orders
+      Order.countDocuments({
+        orderType: 'delivery',
+        createdAt: { $gte: today, $lt: tomorrow }
+      }),
+
+      // Pending delivery assignments
+      Order.countDocuments({
+        orderType: 'delivery',
+        status: { $in: ['confirmed', 'preparing', 'ready for pickup'] },
+        assignedTo: { $exists: false },
+        createdAt: { $gte: today, $lt: tomorrow }
+      }),
+
+      // Out for delivery
+      Order.countDocuments({
+        orderType: 'delivery',
+        status: 'out for delivery',
+        createdAt: { $gte: today, $lt: tomorrow }
+      }),
+
+      // Delivered today
+      Order.countDocuments({
+        orderType: 'delivery',
+        status: 'delivered',
+        createdAt: { $gte: today, $lt: tomorrow }
+      }),
+
+      // Total delivery persons
+      User.countDocuments({
+        role: 'delivery'
+      }),
+
+      // Active delivery persons
+      User.countDocuments({
+        role: 'delivery',
+        isActive: true
+      })
+    ]);
+
+    res.json({
+      deliveryOrders,
+      pendingDeliveries,
+      outForDelivery,
+      deliveredToday,
+      totalDeliveryPersons,
+      activeDeliveryPersons
+    });
+  } catch (error) {
+    console.error('Delivery stats error:', error);
+    res.status(500).json({ message: 'Failed to fetch delivery statistics' });
+  }
+});
+
+// Get delivery orders
+router.get('/delivery/orders', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { status, assignedTo, page = 1, limit = 50 } = req.query;
+    const filter = { orderType: 'delivery' };
+    
+    if (status) filter.status = status;
+    if (assignedTo && assignedTo !== 'all') filter.assignedTo = assignedTo;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [orders, total] = await Promise.all([
+      Order.find(filter)
+        .populate('customer', 'name email phone')
+        .populate('items.menuItem', 'name price')
+        .populate('assignedTo', 'name phone')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Order.countDocuments(filter)
+    ]);
+
+    res.json({
+      orders,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Delivery orders fetch error:', error);
+    res.status(500).json({ message: 'Failed to fetch delivery orders' });
+  }
+});
+
+// Assign delivery person to order
+router.patch('/orders/:orderId/assign-delivery', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { deliveryPersonId } = req.body;
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (order.orderType !== 'delivery') {
+      return res.status(400).json({ message: 'Order is not a delivery order' });
+    }
+
+    // Verify delivery person exists and is active
+    const deliveryPerson = await User.findOne({
+      _id: deliveryPersonId,
+      role: 'delivery',
+      isActive: true
+    });
+
+    if (!deliveryPerson) {
+      return res.status(404).json({ message: 'Delivery person not found or inactive' });
+    }
+
+    // Update order
+    order.assignedTo = deliveryPersonId;
+    if (order.status === 'confirmed' || order.status === 'preparing') {
+      order.status = 'ready for pickup';
+    }
+    order.updatedAt = new Date();
+
+    // Add to status history
+    if (!order.statusHistory) {
+      order.statusHistory = [];
+    }
+    order.statusHistory.push({
+      status: order.status,
+      timestamp: new Date(),
+      updatedBy: req.user._id,
+      updatedByRole: req.user.role,
+      notes: `Assigned to delivery person: ${deliveryPerson.name}`
+    });
+
+    await order.save();
+    await order.populate('customer', 'name email phone');
+    await order.populate('items.menuItem', 'name price');
+    await order.populate('assignedTo', 'name phone');
+
+    res.json({
+      message: 'Delivery person assigned successfully',
+      order
+    });
+  } catch (error) {
+    console.error('Assign delivery person error:', error);
+    res.status(500).json({ message: 'Failed to assign delivery person' });
   }
 });
 
@@ -873,6 +1042,43 @@ router.get('/analytics/customers', authenticateToken, requireAdmin, async (req, 
   }
 });
 
+// Get real-time customer activity analytics
+router.get('/analytics/customer-activity', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { dateRange = '30d' } = req.query;
+    const analyticsData = await CustomerActivityService.getCustomerAnalytics(dateRange);
+    res.json(analyticsData);
+  } catch (error) {
+    console.error('Customer activity analytics error:', error);
+    res.status(500).json({ message: 'Failed to fetch customer activity analytics' });
+  }
+});
+
+// Get real-time active sessions
+router.get('/analytics/active-sessions', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const activeSessions = await CustomerActivityService.getActiveSessions();
+    res.json({ activeSessions });
+  } catch (error) {
+    console.error('Active sessions error:', error);
+    res.status(500).json({ message: 'Failed to fetch active sessions' });
+  }
+});
+
+// Get detailed customer activity for specific customer
+router.get('/analytics/customer-activity/:customerId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { dateRange = '7d' } = req.query;
+    
+    const analyticsData = await CustomerActivityService.getCustomerAnalytics(dateRange, customerId);
+    res.json(analyticsData);
+  } catch (error) {
+    console.error('Customer activity error:', error);
+    res.status(500).json({ message: 'Failed to fetch customer activity' });
+  }
+});
+
 // ===== INVENTORY MANAGEMENT ROUTES =====
 
 // Get all inventory items
@@ -1207,6 +1413,34 @@ router.patch('/menu/:id/availability', authenticateToken, requireAdmin, async (r
   } catch (error) {
     console.error('Toggle menu item availability error:', error);
     res.status(500).json({ message: 'Failed to toggle menu item availability' });
+  }
+});
+
+// Get available categories
+router.get('/menu/categories', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    // Get categories from the MenuItem model enum
+    const MenuItem = require('../models/MenuItem');
+    const categoryEnum = MenuItem.schema.paths.category.enumValues;
+    
+    // Also get categories that are actually in use
+    const categoriesInUse = await MenuItem.distinct('category');
+    
+    // Combine and deduplicate
+    const allCategories = [...new Set([...categoryEnum, ...categoriesInUse])];
+    
+    // Create category objects with display names
+    const categories = allCategories.map(category => ({
+      value: category,
+      label: category.split('-').map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1)
+      ).join(' ')
+    }));
+    
+    res.json({ categories });
+  } catch (error) {
+    console.error('Categories fetch error:', error);
+    res.status(500).json({ message: 'Failed to fetch categories' });
   }
 });
 
