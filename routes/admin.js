@@ -1407,6 +1407,114 @@ router.delete('/employees/:id', authenticateToken, requireAdmin, async (req, res
   }
 });
 
+// ===== CASH COLLECTION TRACKING =====
+
+// Get cash collection report for delivery persons
+router.get('/cash-collection', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { fromDate, toDate, deliveryPersonId } = req.query;
+
+    if (!fromDate || !toDate) {
+      return res.status(400).json({ 
+        message: 'From date and to date are required' 
+      });
+    }
+
+    // Parse dates and set time boundaries
+    const startDate = new Date(fromDate);
+    startDate.setHours(0, 0, 0, 0);
+    
+    const endDate = new Date(toDate);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Build filter for orders
+    const orderFilter = {
+      orderType: 'delivery',
+      paymentMethod: 'cash',
+      status: 'delivered',
+      createdAt: { $gte: startDate, $lte: endDate }
+    };
+
+    // If specific delivery person is selected, filter by assignedTo
+    if (deliveryPersonId && deliveryPersonId !== 'all') {
+      orderFilter.assignedTo = deliveryPersonId;
+    }
+
+    // Get orders with cash on delivery
+    const orders = await Order.find(orderFilter)
+      .populate('assignedTo', 'name email phone')
+      .populate('customer', 'name phone')
+      .populate('items.menuItem', 'name price')
+      .sort({ createdAt: -1 });
+
+    // Group orders by delivery person
+    const collectionData = {};
+    let totalCashToCollect = 0;
+
+    orders.forEach(order => {
+      const deliveryPerson = order.assignedTo;
+      if (!deliveryPerson) return;
+
+      const personId = deliveryPerson._id.toString();
+      
+      if (!collectionData[personId]) {
+        collectionData[personId] = {
+          deliveryPerson: {
+            id: deliveryPerson._id,
+            name: deliveryPerson.name,
+            email: deliveryPerson.email,
+            phone: deliveryPerson.phone
+          },
+          orders: [],
+          totalAmount: 0,
+          orderCount: 0
+        };
+      }
+
+      collectionData[personId].orders.push({
+        orderNumber: order.orderNumber,
+        customerName: order.customer?.name || order.customerInfo?.name || 'Guest',
+        customerPhone: order.customer?.phone || order.customerInfo?.phone || '',
+        total: order.total,
+        deliveryAddress: order.deliveryAddress,
+        createdAt: order.createdAt,
+        items: order.items.map(item => ({
+          name: item.menuItem?.name || 'Unknown Item',
+          quantity: item.quantity,
+          price: item.price
+        }))
+      });
+
+      collectionData[personId].totalAmount += order.total;
+      collectionData[personId].orderCount += 1;
+      totalCashToCollect += order.total;
+    });
+
+    // Convert to array format
+    const collectionReport = Object.values(collectionData);
+
+    res.json({
+      success: true,
+      data: {
+        dateRange: { fromDate, toDate },
+        totalCashToCollect,
+        totalOrders: orders.length,
+        deliveryPersonsCount: collectionReport.length,
+        collections: collectionReport
+      }
+    });
+
+  } catch (error) {
+    console.error('Cash collection report error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to fetch cash collection report' 
+    });
+  }
+});
+
+
+
 // ===== DELIVERY MANAGEMENT ROUTES =====
 
 // Assign delivery person to order
@@ -1459,7 +1567,7 @@ router.patch('/orders/:orderId/assign', authenticateToken, requireEmployee, [
 
     // Update order with delivery person assignment
     order.assignedTo = deliveryPersonId;
-    order.status = 'ready for pickup'; // Set status to ready for pickup when assigned
+    order.status = 'out for delivery'; // Set status to out for delivery when assigned
     order.updatedAt = new Date();
 
     await order.save();
@@ -1484,10 +1592,11 @@ router.patch('/orders/:orderId/assign', authenticateToken, requireEmployee, [
 // Get all delivery persons for assignment
 router.get('/delivery-persons', authenticateToken, requireEmployee, async (req, res) => {
   try {
+    console.log('🚚 [DELIVERY-PERSONS] Route accessed by user:', req.user?.role, req.user?.name);
     const deliveryPersons = await User.find({
       role: 'delivery',
       isActive: true
-    }).select('name phone department _id');
+    }).select('name email phone department _id').sort({ name: 1 });
 
     // Get current workload for each delivery person
     const deliveryPersonsWithWorkload = await Promise.all(
@@ -1507,9 +1616,11 @@ router.get('/delivery-persons', authenticateToken, requireEmployee, async (req, 
     // Sort by workload (ascending) so least busy appears first
     deliveryPersonsWithWorkload.sort((a, b) => a.activeOrders - b.activeOrders);
 
+    console.log('🚚 [DELIVERY-PERSONS] Found', deliveryPersonsWithWorkload.length, 'delivery persons');
+    
     res.json({
       success: true,
-      deliveryPersons: deliveryPersonsWithWorkload
+      data: deliveryPersonsWithWorkload
     });
   } catch (error) {
     console.error('Error fetching delivery persons:', error);

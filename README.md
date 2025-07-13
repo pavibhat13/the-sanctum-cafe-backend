@@ -89,7 +89,6 @@ headers: {
 ## 📚 API Endpoints
 
 ### Authentication Routes (`/api/auth`)
-- `POST /register` - Register new user
 - `POST /login` - User login
 - `GET /profile` - Get current user profile
 - `PUT /profile` - Update user profile
@@ -199,16 +198,7 @@ The API includes:
 
 ## 🤝 API Usage Examples
 
-### Register User
-```javascript
-POST /api/auth/register
-{
-  "name": "John Doe",
-  "email": "john@example.com",
-  "password": "password123",
-  "role": "customer"
-}
-```
+
 
 ### Login
 ```javascript
