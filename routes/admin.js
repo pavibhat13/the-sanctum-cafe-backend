@@ -1045,8 +1045,8 @@ router.get('/analytics/customers', authenticateToken, requireAdmin, async (req, 
 // Get real-time customer activity analytics
 router.get('/analytics/customer-activity', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { dateRange = '30d' } = req.query;
-    const analyticsData = await CustomerActivityService.getCustomerAnalytics(dateRange);
+    const { dateRange = '30d', fromDate, toDate } = req.query;
+    const analyticsData = await CustomerActivityService.getCustomerAnalytics(dateRange, null, fromDate, toDate);
     res.json(analyticsData);
   } catch (error) {
     console.error('Customer activity analytics error:', error);
@@ -1069,9 +1069,9 @@ router.get('/analytics/active-sessions', authenticateToken, requireAdmin, async 
 router.get('/analytics/customer-activity/:customerId', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { customerId } = req.params;
-    const { dateRange = '7d' } = req.query;
+    const { dateRange = '7d', fromDate, toDate } = req.query;
     
-    const analyticsData = await CustomerActivityService.getCustomerAnalytics(dateRange, customerId);
+    const analyticsData = await CustomerActivityService.getCustomerAnalytics(dateRange, customerId, fromDate, toDate);
     res.json(analyticsData);
   } catch (error) {
     console.error('Customer activity error:', error);

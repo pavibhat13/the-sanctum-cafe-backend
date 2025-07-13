@@ -239,29 +239,44 @@ class CustomerActivityService {
     }
   }
 
-  // Get customer activity analytics
-  static async getCustomerAnalytics(dateRange = '30d', customerId = null) {
+  // Get customer activity analytics with enhanced date filtering
+  static async getCustomerAnalytics(dateRange = '30d', customerId = null, fromDate = null, toDate = null) {
     try {
-      let startDate = new Date();
-      switch (dateRange) {
-        case '24h':
-          startDate.setHours(startDate.getHours() - 24);
-          break;
-        case '7d':
-          startDate.setDate(startDate.getDate() - 7);
-          break;
-        case '30d':
-          startDate.setDate(startDate.getDate() - 30);
-          break;
-        case '90d':
-          startDate.setDate(startDate.getDate() - 90);
-          break;
-        default:
-          startDate.setDate(startDate.getDate() - 30);
+      let startDate, endDate;
+      
+      // Handle custom date range
+      if (fromDate && toDate) {
+        startDate = new Date(fromDate);
+        endDate = new Date(toDate);
+        endDate.setHours(23, 59, 59, 999); // End of day
+      } else {
+        // Handle predefined ranges
+        endDate = new Date();
+        startDate = new Date();
+        
+        switch (dateRange) {
+          case '24h':
+            startDate.setHours(startDate.getHours() - 24);
+            break;
+          case '7d':
+            startDate.setDate(startDate.getDate() - 7);
+            break;
+          case '30d':
+            startDate.setDate(startDate.getDate() - 30);
+            break;
+          case '90d':
+            startDate.setDate(startDate.getDate() - 90);
+            break;
+          case '1y':
+            startDate.setFullYear(startDate.getFullYear() - 1);
+            break;
+          default:
+            startDate.setDate(startDate.getDate() - 30);
+        }
       }
 
       const matchFilter = {
-        timestamp: { $gte: startDate }
+        timestamp: { $gte: startDate, $lte: endDate }
       };
 
       if (customerId) {
@@ -381,13 +396,191 @@ class CustomerActivityService {
         { $limit: 10 }
       ]);
 
+      // Get cart conversion statistics
+      const cartConversionStats = await CustomerActivity.aggregate([
+        {
+          $match: {
+            ...matchFilter,
+            activityType: { $in: ['cart_add', 'cart_update', 'order_placed'] }
+          }
+        },
+        {
+          $group: {
+            _id: '$sessionId',
+            customer: { $first: '$customer' },
+            hasCartActivity: {
+              $sum: {
+                $cond: [
+                  { $in: ['$activityType', ['cart_add', 'cart_update']] },
+                  1,
+                  0
+                ]
+              }
+            },
+            hasOrder: {
+              $sum: {
+                $cond: [{ $eq: ['$activityType', 'order_placed'] }, 1, 0]
+              }
+            },
+            maxCartTotal: { $max: '$details.cartTotal' },
+            maxCartItems: { $max: '$details.cartItemCount' },
+            firstCartActivity: { $min: '$timestamp' },
+            lastActivity: { $max: '$timestamp' }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalSessions: { $sum: 1 },
+            sessionsWithCart: {
+              $sum: { $cond: [{ $gt: ['$hasCartActivity', 0] }, 1, 0] }
+            },
+            convertedSessions: {
+              $sum: { $cond: [{ $gt: ['$hasOrder', 0] }, 1, 0] }
+            },
+            abandonedSessions: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $gt: ['$hasCartActivity', 0] }, { $eq: ['$hasOrder', 0] }] },
+                  1,
+                  0
+                ]
+              }
+            },
+            totalCartValue: { $sum: '$maxCartTotal' },
+            averageCartValue: { $avg: '$maxCartTotal' },
+            averageCartItems: { $avg: '$maxCartItems' }
+          }
+        }
+      ]);
+
+      // Get detailed cart activity breakdown
+      const cartActivityBreakdown = await CustomerActivity.aggregate([
+        {
+          $match: {
+            ...matchFilter,
+            activityType: { $in: ['cart_add', 'cart_remove', 'cart_update'] }
+          }
+        },
+        {
+          $group: {
+            _id: '$activityType',
+            count: { $sum: 1 },
+            totalQuantity: { $sum: '$details.quantity' },
+            totalValue: { $sum: { $multiply: ['$details.quantity', '$details.price'] } },
+            uniqueItems: { $addToSet: '$details.menuItem' },
+            uniqueCustomers: { $addToSet: '$customer' }
+          }
+        },
+        {
+          $project: {
+            activityType: '$_id',
+            count: 1,
+            totalQuantity: 1,
+            totalValue: 1,
+            uniqueItems: { $size: '$uniqueItems' },
+            uniqueCustomers: { $size: '$uniqueCustomers' }
+          }
+        }
+      ]);
+
+      // Get popular items from cart activities
+      const popularCartItems = await CustomerActivity.aggregate([
+        {
+          $match: {
+            ...matchFilter,
+            activityType: 'cart_add',
+            'details.menuItem': { $exists: true }
+          }
+        },
+        {
+          $group: {
+            _id: '$details.menuItem',
+            addCount: { $sum: 1 },
+            totalQuantity: { $sum: '$details.quantity' },
+            totalValue: { $sum: { $multiply: ['$details.quantity', '$details.price'] } },
+            uniqueCustomers: { $addToSet: '$customer' }
+          }
+        },
+        {
+          $lookup: {
+            from: 'menuitems',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'menuItem'
+          }
+        },
+        { $unwind: '$menuItem' },
+        {
+          $project: {
+            menuItem: 1,
+            addCount: 1,
+            totalQuantity: 1,
+            totalValue: 1,
+            uniqueCustomers: { $size: '$uniqueCustomers' }
+          }
+        },
+        { $sort: { addCount: -1 } },
+        { $limit: 10 }
+      ]);
+
+      // Get hourly activity pattern
+      const hourlyPattern = await CustomerActivity.aggregate([
+        { $match: matchFilter },
+        {
+          $group: {
+            _id: { $hour: '$timestamp' },
+            count: { $sum: 1 },
+            cartActivities: {
+              $sum: {
+                $cond: [
+                  { $in: ['$activityType', ['cart_add', 'cart_remove', 'cart_update']] },
+                  1,
+                  0
+                ]
+              }
+            }
+          }
+        },
+        { $sort: { '_id': 1 } }
+      ]);
+
+      const conversionStats = cartConversionStats[0] || {
+        totalSessions: 0,
+        sessionsWithCart: 0,
+        convertedSessions: 0,
+        abandonedSessions: 0,
+        totalCartValue: 0,
+        averageCartValue: 0,
+        averageCartItems: 0
+      };
+
+      const conversionRate = conversionStats.sessionsWithCart > 0 
+        ? (conversionStats.convertedSessions / conversionStats.sessionsWithCart) * 100 
+        : 0;
+
+      const abandonmentRate = conversionStats.sessionsWithCart > 0 
+        ? (conversionStats.abandonedSessions / conversionStats.sessionsWithCart) * 100 
+        : 0;
+
       return {
         activitySummary,
         recentActivities,
         cartAbandonments,
         topActiveCustomers,
-        dateRange,
-        totalActivities: recentActivities.length
+        cartConversionStats: {
+          ...conversionStats,
+          conversionRate,
+          abandonmentRate
+        },
+        cartActivityBreakdown,
+        popularCartItems,
+        hourlyPattern,
+        dateRange: fromDate && toDate ? 'custom' : dateRange,
+        customDateRange: fromDate && toDate ? { fromDate, toDate } : null,
+        totalActivities: recentActivities.length,
+        startDate,
+        endDate
       };
     } catch (error) {
       console.error('Error getting customer analytics:', error);
