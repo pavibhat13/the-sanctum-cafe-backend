@@ -124,6 +124,7 @@ router.post('/', authenticateToken, [
 
     await order.save();
     await order.populate('items.menuItem', 'name price image');
+    await order.populate('customer', 'name email phone');
 
     res.status(201).json({
       message: 'Order created successfully',
@@ -247,6 +248,7 @@ router.patch('/:id/status', authenticateToken, requireEmployee, [
 
     await order.save();
     await order.populate('items.menuItem', 'name price image');
+    await order.populate('customer', 'name email phone');
 
     const response = {
       message: 'Order status updated successfully',

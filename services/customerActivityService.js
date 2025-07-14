@@ -20,11 +20,11 @@ class CustomerActivityService {
       
       await activity.save();
       
-      // Emit real-time event
+      // Emit real-time event to admin rooms only
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity.populate('customer', 'name email');
-        io.emit('customer_activity', {
+        io.to('admin').emit('customer_activity', {
           type: 'login',
           activity: populatedActivity,
           timestamp: new Date()
@@ -62,11 +62,11 @@ class CustomerActivityService {
       
       await activity.save();
       
-      // Emit real-time event
+      // Emit real-time event to admin rooms only
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity.populate('customer', 'name email');
-        io.emit('customer_activity', {
+        io.to('admin').emit('customer_activity', {
           type: 'logout',
           activity: populatedActivity,
           timestamp: new Date()
@@ -99,14 +99,14 @@ class CustomerActivityService {
       
       await activity.save();
       
-      // Emit real-time event
+      // Emit real-time event to admin rooms only
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity
           .populate('customer', 'name email')
           .populate('details.menuItem', 'name price category image');
         
-        io.emit('customer_activity', {
+        io.to('admin').emit('customer_activity', {
           type: 'cart_add',
           activity: populatedActivity,
           timestamp: new Date()
@@ -146,7 +146,7 @@ class CustomerActivityService {
           .populate('customer', 'name email')
           .populate('details.menuItem', 'name price category image');
         
-        io.emit('customer_activity', {
+        io.to('admin').emit('customer_activity', {
           type: 'cart_remove',
           activity: populatedActivity,
           timestamp: new Date()
@@ -187,7 +187,7 @@ class CustomerActivityService {
           .populate('customer', 'name email')
           .populate('details.menuItem', 'name price category image');
         
-        io.emit('customer_activity', {
+        io.to('admin').emit('customer_activity', {
           type: 'cart_update',
           activity: populatedActivity,
           timestamp: new Date()
@@ -225,7 +225,7 @@ class CustomerActivityService {
           .populate('customer', 'name email')
           .populate('details.orderId', 'total items status');
         
-        io.emit('customer_activity', {
+        io.to('admin').emit('customer_activity', {
           type: 'order_placed',
           activity: populatedActivity,
           timestamp: new Date()

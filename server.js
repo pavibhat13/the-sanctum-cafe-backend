@@ -68,6 +68,12 @@ mongoose.connect(mongoUri)
 })
 .catch(err => console.error('❌ MongoDB connection error:', err));
 
+// Load session routes and middleware first
+const sessionsRoutes = require('./routes/sessions');
+
+// Add session tracking middleware to all API routes BEFORE defining routes
+app.use('/api', sessionsRoutes.trackSession);
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
@@ -78,6 +84,7 @@ app.use('/api/delivery', require('./routes/delivery'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/analytics', require('./routes/cart-tracking'));
+app.use('/api/sessions', sessionsRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -113,22 +120,86 @@ const io = socketIo(server, {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('👤 Client connected:', socket.id);
+  const { userRole, userId, sessionId, deviceId } = socket.handshake.query;
+  console.log(`👤 Client connected: ${socket.id} (${userRole}:${userId}:${deviceId}:${sessionId})`);
   
-  // Join admin room for real-time analytics
+  // Store session info on socket
+  socket.userRole = userRole;
+  socket.userId = userId;
+  socket.sessionId = sessionId;
+  socket.deviceId = deviceId;
+  
+  // Join appropriate rooms based on user role and support multiple devices
+  if (userRole === 'admin') {
+    socket.join('admin'); // All admins
+    socket.join(`admin_${userId}`); // Specific admin (all devices)
+    socket.join(`admin_${userId}_${deviceId}`); // Specific admin device
+    socket.join(`session_${sessionId}`); // Specific session
+    console.log(`👨‍💼 Admin joined rooms: ${socket.id} (user:${userId}, device:${deviceId}, session:${sessionId})`);
+  } else if (userRole === 'customer') {
+    socket.join('customers'); // All customers
+    socket.join(`customer_${userId}`); // Specific customer (all devices)
+    socket.join(`customer_${userId}_${deviceId}`); // Specific customer device
+    socket.join(`session_${sessionId}`); // Specific session
+    console.log(`👤 Customer joined rooms: ${socket.id} (user:${userId}, device:${deviceId}, session:${sessionId})`);
+  } else if (userRole === 'employee') {
+    socket.join('employees');
+    socket.join(`employee_${userId}`);
+    socket.join(`employee_${userId}_${deviceId}`);
+    socket.join(`session_${sessionId}`);
+    console.log(`👨‍🍳 Employee joined rooms: ${socket.id} (user:${userId}, device:${deviceId}, session:${sessionId})`);
+  } else if (userRole === 'delivery') {
+    socket.join('delivery');
+    socket.join(`delivery_${userId}`);
+    socket.join(`delivery_${userId}_${deviceId}`);
+    socket.join(`session_${sessionId}`);
+    console.log(`🚚 Delivery joined rooms: ${socket.id} (user:${userId}, device:${deviceId}, session:${sessionId})`);
+  }
+  
+  // Join admin room for real-time analytics (legacy support)
   socket.on('join_admin', () => {
     socket.join('admin');
-    console.log('👨‍💼 Admin joined analytics room:', socket.id);
+    console.log('👨‍💼 Admin joined analytics room (legacy):', socket.id);
   });
   
-  // Leave admin room
+  // Leave admin room (legacy support)
   socket.on('leave_admin', () => {
     socket.leave('admin');
-    console.log('👨‍💼 Admin left analytics room:', socket.id);
+    console.log('👨‍💼 Admin left analytics room (legacy):', socket.id);
   });
   
-  socket.on('disconnect', () => {
-    console.log('👤 Client disconnected:', socket.id);
+  // Handle session-specific events
+  socket.on('session_ping', (data) => {
+    socket.emit('session_pong', { 
+      sessionId: socket.sessionId,
+      userId: socket.userId,
+      deviceId: socket.deviceId,
+      userRole: socket.userRole,
+      timestamp: Date.now()
+    });
+  });
+
+  // Handle device-specific events
+  socket.on('device_sync', (data) => {
+    // Sync data across all devices for the same user
+    socket.to(`${userRole}_${userId}`).emit('device_sync_update', {
+      fromDevice: deviceId,
+      data: data,
+      timestamp: Date.now()
+    });
+  });
+
+  // Handle user-specific notifications
+  socket.on('user_notification', (data) => {
+    // Send notification to all devices of the user
+    io.to(`${userRole}_${userId}`).emit('notification', {
+      ...data,
+      timestamp: Date.now()
+    });
+  });
+  
+  socket.on('disconnect', (reason) => {
+    console.log(`👤 Client disconnected: ${socket.id} (${userRole}:${userId}:${deviceId}:${sessionId}) - ${reason}`);
   });
 });
 
