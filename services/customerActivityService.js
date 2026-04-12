@@ -17,9 +17,9 @@ class CustomerActivityService {
           metadata: details.metadata
         }
       });
-      
+
       await activity.save();
-      
+
       // Emit real-time event to admin rooms only
       const io = require('../server').io;
       if (io) {
@@ -30,7 +30,7 @@ class CustomerActivityService {
           timestamp: new Date()
         });
       }
-      
+
       return activity;
     } catch (error) {
       console.error('Error tracking login:', error);
@@ -59,9 +59,9 @@ class CustomerActivityService {
           metadata: details.metadata
         }
       });
-      
+
       await activity.save();
-      
+
       // Emit real-time event to admin rooms only
       const io = require('../server').io;
       if (io) {
@@ -72,7 +72,7 @@ class CustomerActivityService {
           timestamp: new Date()
         });
       }
-      
+
       return activity;
     } catch (error) {
       console.error('Error tracking logout:', error);
@@ -96,23 +96,23 @@ class CustomerActivityService {
           metadata: cartDetails.metadata
         }
       });
-      
+
       await activity.save();
-      
+
       // Emit real-time event to admin rooms only
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity
           .populate('customer', 'name email')
           .populate('details.menuItem', 'name price category image');
-        
+
         io.to('admin').emit('customer_activity', {
           type: 'cart_add',
           activity: populatedActivity,
           timestamp: new Date()
         });
       }
-      
+
       return activity;
     } catch (error) {
       console.error('Error tracking cart add:', error);
@@ -136,23 +136,23 @@ class CustomerActivityService {
           metadata: cartDetails.metadata
         }
       });
-      
+
       await activity.save();
-      
+
       // Emit real-time event
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity
           .populate('customer', 'name email')
           .populate('details.menuItem', 'name price category image');
-        
+
         io.to('admin').emit('customer_activity', {
           type: 'cart_remove',
           activity: populatedActivity,
           timestamp: new Date()
         });
       }
-      
+
       return activity;
     } catch (error) {
       console.error('Error tracking cart remove:', error);
@@ -177,23 +177,23 @@ class CustomerActivityService {
           metadata: cartDetails.metadata
         }
       });
-      
+
       await activity.save();
-      
+
       // Emit real-time event
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity
           .populate('customer', 'name email')
           .populate('details.menuItem', 'name price category image');
-        
+
         io.to('admin').emit('customer_activity', {
           type: 'cart_update',
           activity: populatedActivity,
           timestamp: new Date()
         });
       }
-      
+
       return activity;
     } catch (error) {
       console.error('Error tracking cart update:', error);
@@ -215,23 +215,23 @@ class CustomerActivityService {
           metadata: cartDetails.metadata
         }
       });
-      
+
       await activity.save();
-      
+
       // Emit real-time event
       const io = require('../server').io;
       if (io) {
         const populatedActivity = await activity
           .populate('customer', 'name email')
           .populate('details.orderId', 'total items status');
-        
+
         io.to('admin').emit('customer_activity', {
           type: 'order_placed',
           activity: populatedActivity,
           timestamp: new Date()
         });
       }
-      
+
       return activity;
     } catch (error) {
       console.error('Error tracking order placed:', error);
@@ -243,7 +243,7 @@ class CustomerActivityService {
   static async getCustomerAnalytics(dateRange = '30d', customerId = null, fromDate = null, toDate = null) {
     try {
       let startDate, endDate;
-      
+
       // Handle custom date range
       if (fromDate && toDate) {
         startDate = new Date(fromDate);
@@ -253,7 +253,7 @@ class CustomerActivityService {
         // Handle predefined ranges
         endDate = new Date();
         startDate = new Date();
-        
+
         switch (dateRange) {
           case '24h':
             startDate.setHours(startDate.getHours() - 24);
@@ -555,12 +555,12 @@ class CustomerActivityService {
         averageCartItems: 0
       };
 
-      const conversionRate = conversionStats.sessionsWithCart > 0 
-        ? (conversionStats.convertedSessions / conversionStats.sessionsWithCart) * 100 
+      const conversionRate = conversionStats.sessionsWithCart > 0
+        ? (conversionStats.convertedSessions / conversionStats.sessionsWithCart) * 100
         : 0;
 
-      const abandonmentRate = conversionStats.sessionsWithCart > 0 
-        ? (conversionStats.abandonedSessions / conversionStats.sessionsWithCart) * 100 
+      const abandonmentRate = conversionStats.sessionsWithCart > 0
+        ? (conversionStats.abandonedSessions / conversionStats.sessionsWithCart) * 100
         : 0;
 
       return {
@@ -592,7 +592,7 @@ class CustomerActivityService {
   static async getActiveSessions() {
     try {
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-      
+
       const activeSessions = await CustomerActivity.aggregate([
         {
           $match: {

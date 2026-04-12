@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
 const DailySales = require('../models/DailySales');
 const PurchaseHeader = require('../models/PurchaseHeader');
@@ -940,6 +941,102 @@ router.get('/dashboard-stats', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// --- Invoice Reading & Automation Routes ---
+
+// Parse Excel invoice from base64 string
+router.post('/parse-invoice', async (req, res) => {
+  try {
+    const { fileData } = req.body; // Expecting base64 string
+    if (!fileData) return res.status(400).json({ message: 'No file data provided' });
+
+    const buffer = Buffer.from(fileData.split(',')[1] || fileData, 'base64');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    
+    const worksheet = workbook.getWorksheet(1);
+    const items = [];
+
+    // Assuming format: Row 1 is header. Col 1: Item, Col 2: Quantity, Col 3: Rate
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber > 1) {
+        const item = row.getCell(1).value;
+        const quantity = Number(row.getCell(2).value);
+        const rate = Number(row.getCell(3).value);
+
+        if (item && !isNaN(quantity) && !isNaN(rate)) {
+          items.push({
+            item: String(item).trim(),
+            quantity,
+            rate,
+            total: quantity * rate
+          });
+        }
+      }
+    });
+
+    res.json({ success: true, items });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to parse Excel file: ' + error.message });
+  }
+});
+
+// Confirm and save invoice items, update inventory
+router.post('/confirm-invoice', async (req, res) => {
+  try {
+    const { purchaseHeaderId, items } = req.body;
+    
+    if (!purchaseHeaderId || !items || !Array.isArray(items)) {
+      return res.status(400).json({ message: 'Invalid confirmation data' });
+    }
+
+    const header = await PurchaseHeader.findById(purchaseHeaderId);
+    if (!header) throw new Error('Purchase header not found');
+
+    const createdLines = [];
+
+    for (const itemData of items) {
+      // 1. Create Purchase Line
+      const newLine = new PurchaseLine({
+        purchaseHeader: purchaseHeaderId,
+        item: itemData.item,
+        quantity: itemData.quantity,
+        rate: itemData.rate,
+        createdBy: req.user.id
+      });
+      await newLine.save();
+      createdLines.push(newLine);
+
+      // 2. Update Management Inventory
+      let inventoryItem = await ManagementInventory.findOne({ item: itemData.item });
+      
+      if (inventoryItem) {
+        // Increment purchasedQty and recalculate closingStock
+        inventoryItem.purchasedQty = (inventoryItem.purchasedQty || 0) + itemData.quantity;
+        // Closing = Opening + Purchased - Used
+        inventoryItem.closingStock = (inventoryItem.openingStock || 0) + inventoryItem.purchasedQty - (inventoryItem.usedQty || 0);
+        await inventoryItem.save();
+      } else {
+        // Optionally create new inventory item if it doesn't exist
+        const newInventory = new ManagementInventory({
+          item: itemData.item,
+          category: 'Other', // Default
+          unit: 'Pkt',
+          openingStock: 0,
+          purchasedQty: itemData.quantity,
+          usedQty: 0,
+          closingStock: itemData.quantity,
+          createdBy: req.user.id
+        });
+        await newInventory.save();
+      }
+    }
+
+    res.json({ success: true, message: `${createdLines.length} items processed successfully`, data: createdLines });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to process invoice: ' + error.message });
   }
 });
 
