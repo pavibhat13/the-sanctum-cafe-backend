@@ -545,20 +545,21 @@ router.get('/reports', async (req, res) => {
         _id: null, 
         totalCharges: { $sum: "$charges" },
         totalReceived: { $sum: "$payoutReceived" },
-        totalExpected: { $sum: "$payoutExpected" }
+        totalGrossSales: { $sum: "$grossSales" }
       }}
     ]);
 
     const sales = salesData[0] || { totalSales: 0, cashSales: 0, upiSales: 0, swiggySales: 0, zomatoSales: 0 };
     const purchases = purchaseData[0] || { totalPurchases: 0 };
     const expenses = expenseData[0] || { totalExpenses: 0 };
-    const settlements = settlementData[0] || { totalCharges: 0, totalReceived: 0, totalExpected: 0 };
+    const settlements = settlementData[0] || { totalCharges: 0, totalReceived: 0, totalGrossSales: 0 };
 
     res.json({
       sales,
       purchases,
       expenses,
-      settlements
+      settlements,
+      totalExpectedPayout: settlements.totalGrossSales - settlements.totalCharges
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -656,7 +657,7 @@ router.get('/export-excel', async (req, res) => {
           { header: 'Payment Date', key: 'paymentDate', width: 15 },
           { header: 'Gross Sales', key: 'grossSales', width: 15 },
           { header: 'Charges', key: 'charges', width: 12 },
-          { header: 'Expected', key: 'payoutExpected', width: 15 },
+          { header: 'Expected (G-C)', key: 'expectedPayout', width: 15 },
           { header: 'Received', key: 'payoutReceived', width: 15 },
           { header: 'Difference', key: 'difference', width: 15 },
           { header: 'Ref', key: 'reference', width: 20 }
@@ -754,6 +755,12 @@ router.get('/export-excel', async (req, res) => {
           row.vendor = row.purchaseHeader.vendor;
           row.headerDate = new Date(row.purchaseHeader.date).toLocaleDateString();
           row.lineTotal = (row.quantity || 0) * (row.rate || 0);
+        }
+
+        // Settlement specific flattening
+        if (type === 'online-settlements') {
+          row.expectedPayout = (row.grossSales || 0) - (row.charges || 0);
+          row.difference = row.expectedPayout - (row.payoutReceived || 0);
         }
 
         ['date', 'paymentDate', 'fromDate', 'toDate'].forEach(key => {
@@ -857,13 +864,16 @@ router.get('/dashboard-stats', async (req, res) => {
         $group: {
           _id: null,
           totalCash: { $sum: '$cash' },
-          totalUpi: { $sum: '$upi' }
+          totalUpi: { $sum: '$upi' },
+          totalSwiggy: { $sum: '$swiggy' },
+          totalZomato: { $sum: '$zomato' }
         }
       }
     ]);
     
     const offlineSales = salesData.length > 0 ? (salesData[0].totalCash + salesData[0].totalUpi) : 0;
-    const totalSales = offlineSales; // As per the image provided
+    const onlineSales = salesData.length > 0 ? (salesData[0].totalSwiggy + salesData[0].totalZomato) : 0;
+    const totalSales = offlineSales + onlineSales;
 
     // 2. Total Purchases
     const purchaseData = await PurchaseHeader.aggregate([
@@ -935,6 +945,7 @@ router.get('/dashboard-stats', async (req, res) => {
       onlineCharges,
       detailedPnL,
       offlineSales,
+      onlineSales,
       thresholdAlerts,
       lowStockItems,
       topVendors

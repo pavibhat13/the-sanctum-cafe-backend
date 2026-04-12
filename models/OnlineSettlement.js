@@ -26,10 +26,6 @@ const onlineSettlementSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
-  payoutExpected: {
-    type: Number,
-    default: 0
-  },
   payoutReceived: {
     type: Number,
     default: 0
@@ -52,7 +48,7 @@ const onlineSettlementSchema = new mongoose.Schema({
 });
 
 onlineSettlementSchema.pre('save', function(next) {
-  this.difference = this.payoutExpected - this.payoutReceived;
+  this.difference = (this.grossSales - this.charges) - this.payoutReceived;
   next();
 });
 

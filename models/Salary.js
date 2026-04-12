@@ -2,9 +2,11 @@ const mongoose = require('mongoose');
 
 const salarySchema = new mongoose.Schema({
   employee: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: mongoose.Schema.Types.Mixed, // Can be ObjectId (ref User) or String (Manual Employee)
     required: true
+  },
+  employeeName: { // Helper to store name if employee is a string
+    type: String
   },
   date: {
     type: Date,

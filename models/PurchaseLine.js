@@ -22,8 +22,11 @@ const purchaseLineSchema = new mongoose.Schema({
   },
   rate: {
     type: Number,
-    required: [true, 'Rate/Amount is required'],
-    min: [0, 'Rate cannot be negative']
+    required: [true, 'Total Amount is required'],
+    min: [0, 'Amount cannot be negative']
+  },
+  unitPrice: {
+    type: Number
   },
   total: {
     type: Number
@@ -42,7 +45,8 @@ const purchaseLineSchema = new mongoose.Schema({
 
 // Calculate total before saving
 purchaseLineSchema.pre('save', function(next) {
-  this.total = this.quantity * this.rate;
+  this.total = this.rate; // Now rate is the TOTAL amount
+  this.unitPrice = this.quantity > 0 ? (this.rate / this.quantity) : 0;
   next();
 });
 
