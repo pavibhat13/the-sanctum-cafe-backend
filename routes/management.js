@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const ExcelJS = require('exceljs');
 const DailySales = require('../models/DailySales');
 const PurchaseHeader = require('../models/PurchaseHeader');
 const PurchaseLine = require('../models/PurchaseLine');
@@ -575,6 +576,211 @@ router.get('/inventory', async (req, res) => {
   }
 });
 
+// Export to Excel Route
+router.get('/export-excel', async (req, res) => {
+  try {
+    const { type, fromDate, toDate, vendor, platform } = req.query;
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(type || 'Export');
+    
+    let query = {};
+    if (fromDate && toDate) {
+      const start = new Date(fromDate);
+      const end = new Date(toDate);
+      end.setHours(23, 59, 59, 999);
+      
+      if (type === 'online-settlements') {
+        query.paymentDate = { $gte: start, $lte: end };
+      } else if (type !== 'inventory') {
+        query.date = { $gte: start, $lte: end };
+      }
+    }
+
+    if (vendor && type === 'purchase-header') query.vendor = vendor;
+    if (platform && type === 'online-settlements') query.platform = platform;
+
+    let data = [];
+    let columns = [];
+
+    switch (type) {
+      case 'daily-sales':
+        data = await DailySales.find(query).sort({ date: -1 });
+        columns = [
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Cash', key: 'cash', width: 12 },
+          { header: 'UPI', key: 'upi', width: 12 },
+          { header: 'Swiggy', key: 'swiggy', width: 12 },
+          { header: 'Zomato', key: 'zomato', width: 12 },
+          { header: 'Total', key: 'total', width: 12 },
+          { header: 'Notes', key: 'notes', width: 30 }
+        ];
+        break;
+      case 'expenses':
+        data = await Expense.find(query).sort({ date: -1 });
+        columns = [
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Category', key: 'category', width: 20 },
+          { header: 'Amount', key: 'amount', width: 12 },
+          { header: 'Notes', key: 'notes', width: 30 }
+        ];
+        break;
+      case 'purchase-header':
+        data = await PurchaseHeader.find(query).sort({ date: -1 });
+        columns = [
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Bill No', key: 'billNo', width: 15 },
+          { header: 'Vendor', key: 'vendor', width: 25 },
+          { header: 'Total Amount', key: 'totalAmount', width: 15 },
+          { header: 'Payment Method', key: 'paymentMethod', width: 20 }
+        ];
+        break;
+      case 'purchase-line':
+        data = await PurchaseLine.find(query).populate('purchaseHeader', 'billNo vendor date').sort({ createdAt: -1 });
+        columns = [
+          { header: 'Date', key: 'headerDate', width: 15 },
+          { header: 'Bill No', key: 'billNo', width: 15 },
+          { header: 'Vendor', key: 'vendor', width: 25 },
+          { header: 'Item', key: 'item', width: 25 },
+          { header: 'Quantity', key: 'quantity', width: 12 },
+          { header: 'Rate', key: 'rate', width: 12 },
+          { header: 'Total', key: 'lineTotal', width: 12 }
+        ];
+        break;
+      case 'online-settlements':
+        data = await OnlineSettlement.find(query).sort({ paymentDate: -1 });
+        columns = [
+          { header: 'Platform', key: 'platform', width: 15 },
+          { header: 'From', key: 'fromDate', width: 15 },
+          { header: 'To', key: 'toDate', width: 15 },
+          { header: 'Payment Date', key: 'paymentDate', width: 15 },
+          { header: 'Gross Sales', key: 'grossSales', width: 15 },
+          { header: 'Charges', key: 'charges', width: 12 },
+          { header: 'Expected', key: 'payoutExpected', width: 15 },
+          { header: 'Received', key: 'payoutReceived', width: 15 },
+          { header: 'Difference', key: 'difference', width: 15 },
+          { header: 'Ref', key: 'reference', width: 20 }
+        ];
+        break;
+      case 'inventory':
+        data = await ManagementInventory.find().sort({ category: 1, item: 1 });
+        columns = [
+          { header: 'Item', key: 'item', width: 25 },
+          { header: 'Category', key: 'category', width: 20 },
+          { header: 'Unit', key: 'unit', width: 10 },
+          { header: 'Opening', key: 'openingStock', width: 10 },
+          { header: 'Purchased', key: 'purchasedQty', width: 10 },
+          { header: 'Used', key: 'usedQty', width: 10 },
+          { header: 'Closing', key: 'closingStock', width: 10 },
+          { header: 'Threshold', key: 'threshold', width: 10 }
+        ];
+        break;
+      case 'salaries':
+        data = await Salary.find(query).populate('employee', 'username role').sort({ date: -1 });
+        columns = [
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Employee', key: 'employeeName', width: 20 },
+          { header: 'Role', key: 'employeeRole', width: 15 },
+          { header: 'Amount', key: 'amount', width: 12 },
+          { header: 'Type', key: 'type', width: 15 },
+          { header: 'Payment Method', key: 'paymentMethod', width: 15 },
+          { header: 'Notes', key: 'notes', width: 30 }
+        ];
+        break;
+      case 'pnl-simple':
+      case 'pnl-detailed':
+        const start = new Date(fromDate);
+        const end = new Date(toDate);
+        end.setHours(23, 59, 59, 999);
+        const dateQuery = { date: { $gte: start, $lte: end } };
+        const dateQueryPayment = { paymentDate: { $gte: start, $lte: end } };
+
+        const salesAgg = await DailySales.aggregate([{ $match: dateQuery }, { $group: { _id: null, total: { $sum: "$total" }, cash: { $sum: "$cash" }, upi: { $sum: "$upi" }, swiggy: { $sum: "$swiggy" }, zomato: { $sum: "$zomato" } } }]);
+        const purchaseAgg = await PurchaseHeader.aggregate([{ $match: dateQuery }, { $group: { _id: null, total: { $sum: "$totalBillAmount" } } }]);
+        const expenseAgg = await Expense.aggregate([{ $match: dateQuery }, { $group: { _id: null, total: { $sum: "$amount" } } }]);
+        const settlementAgg = await OnlineSettlement.aggregate([{ $match: dateQueryPayment }, { $group: { _id: null, charges: { $sum: "$charges" } } }]);
+
+        const s = salesAgg[0] || { total: 0, cash: 0, upi: 0, swiggy: 0, zomato: 0 };
+        const p = purchaseAgg[0] || { total: 0 };
+        const e = expenseAgg[0] || { total: 0 };
+        const st = settlementAgg[0] || { charges: 0 };
+
+        columns = [
+          { header: 'Metric', key: 'metric', width: 30 },
+          { header: 'Amount', key: 'amount', width: 20 }
+        ];
+
+        if (type === 'pnl-simple') {
+          data = [
+            { metric: 'Total Sales', amount: s.total },
+            { metric: 'Purchases', amount: p.total },
+            { metric: 'Expenses', amount: e.total },
+            { metric: 'Simple Profit / Loss', amount: s.total - p.total - e.total }
+          ];
+        } else {
+          data = [
+            { metric: 'Offline Sales (Cash + UPI)', amount: s.cash + s.upi },
+            { metric: 'Online Sales (Swiggy + Zomato)', amount: s.swiggy + s.zomato },
+            { metric: 'Total Gross Sales', amount: s.total },
+            { metric: 'Purchases', amount: p.total },
+            { metric: 'Expenses', amount: e.total },
+            { metric: 'Swiggy/Zomato Charges', amount: st.charges },
+            { metric: 'Detailed Profit / Loss', amount: s.total - p.total - e.total - st.charges }
+          ];
+        }
+        break;
+      default:
+        return res.status(400).json({ message: 'Invalid export type' });
+    }
+
+    sheet.columns = columns;
+    
+    // Add data rows
+    if (type.startsWith('pnl-')) {
+      data.forEach(item => sheet.addRow(item));
+    } else {
+      data.forEach(item => {
+        const row = { ...item.toObject() };
+        
+        // Flatten employee object for salaries
+        if (type === 'salaries' && row.employee) {
+          row.employeeName = row.employee.username;
+          row.employeeRole = row.employee.role;
+        }
+
+        // Flatten purchase header for lines
+        if (type === 'purchase-line' && row.purchaseHeader) {
+          row.billNo = row.purchaseHeader.billNo;
+          row.vendor = row.purchaseHeader.vendor;
+          row.headerDate = new Date(row.purchaseHeader.date).toLocaleDateString();
+          row.lineTotal = (row.quantity || 0) * (row.rate || 0);
+        }
+
+        ['date', 'paymentDate', 'fromDate', 'toDate'].forEach(key => {
+          if (row[key]) row[key] = new Date(row[key]).toLocaleDateString();
+        });
+        sheet.addRow(row);
+      });
+    }
+
+    // Style the header
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E0E0' }
+    };
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=${type}-${new Date().toISOString().split('T')[0]}.xlsx`);
+
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // Save or Update Stock
 router.post('/inventory', async (req, res) => {
   try {
@@ -636,6 +842,102 @@ router.delete('/inventory/:id', async (req, res) => {
   try {
     await ManagementInventory.findByIdAndDelete(req.params.id);
     res.json({ message: 'Item deleted' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Management Dashboard Routes
+router.get('/dashboard-stats', async (req, res) => {
+  try {
+    // 1. Total Sales & Offline Sales
+    const salesData = await DailySales.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalCash: { $sum: '$cash' },
+          totalUpi: { $sum: '$upi' }
+        }
+      }
+    ]);
+    
+    const offlineSales = salesData.length > 0 ? (salesData[0].totalCash + salesData[0].totalUpi) : 0;
+    const totalSales = offlineSales; // As per the image provided
+
+    // 2. Total Purchases
+    const purchaseData = await PurchaseHeader.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$totalAmount' }
+        }
+      }
+    ]);
+    const totalPurchases = purchaseData.length > 0 ? purchaseData[0].totalAmount : 0;
+
+    // 3. Total Expenses
+    const expenseData = await Expense.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+    const totalExpenses = expenseData.length > 0 ? expenseData[0].totalAmount : 0;
+
+    // 4. Online Charges
+    const settlementData = await OnlineSettlement.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalCharges: { $sum: '$charges' }
+        }
+      }
+    ]);
+    const onlineCharges = settlementData.length > 0 ? settlementData[0].totalCharges : 0;
+
+    // 5. P&L Calculations
+    const simplePnL = totalSales - totalPurchases - totalExpenses;
+    const detailedPnL = simplePnL - onlineCharges;
+
+    // 6. Threshold Alerts & Low Stock Items
+    const lowStockItems = await ManagementInventory.find({
+      $expr: { $lte: ['$closingStock', '$threshold'] }
+    });
+    const thresholdAlerts = lowStockItems.length;
+
+    // 7. Top Vendors by Bill Total
+    const topVendors = await PurchaseHeader.aggregate([
+      {
+        $group: {
+          _id: '$vendor',
+          total: { $sum: '$totalAmount' }
+        }
+      },
+      { $sort: { total: -1 } },
+      { $limit: 10 },
+      {
+        $project: {
+          vendor: '$_id',
+          total: 1,
+          _id: 0
+        }
+      }
+    ]);
+
+    res.json({
+      totalSales,
+      totalPurchases,
+      totalExpenses,
+      simplePnL,
+      onlineCharges,
+      detailedPnL,
+      offlineSales,
+      thresholdAlerts,
+      lowStockItems,
+      topVendors
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
