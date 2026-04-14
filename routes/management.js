@@ -566,6 +566,64 @@ router.get('/reports', async (req, res) => {
   }
 });
 
+// GET Purchase Summary Report
+router.get('/reports/purchase-summary', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ message: 'From and To dates are required' });
+    }
+
+    const start = new Date(from);
+    const end = new Date(to);
+    end.setHours(23, 59, 59, 999);
+
+    // 1. Get all individual purchase lines in the date range
+    const lines = await PurchaseLine.aggregate([
+      {
+        $lookup: {
+          from: 'purchaseheaders',
+          localField: 'purchaseHeader',
+          foreignField: '_id',
+          as: 'header'
+        }
+      },
+      { $unwind: '$header' },
+      {
+        $match: {
+          'header.date': { $gte: start, $lte: end }
+        }
+      },
+      {
+        $project: {
+          date: '$header.date',
+          item: '$item',
+          quantity: '$quantity',
+          unitPrice: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$rate', '$quantity'] }, 0] },
+          _id: 1
+        }
+      },
+      { $sort: { date: -1, item: 1 } }
+    ]);
+
+    // 2. Determine price change per item within this set
+    const itemPrices = {};
+    lines.forEach(line => {
+      if (!itemPrices[line.item]) itemPrices[line.item] = new Set();
+      itemPrices[line.item].add(Number(line.unitPrice.toFixed(2)));
+    });
+
+    const finalData = lines.map(line => ({
+      ...line,
+      priceChanged: itemPrices[line.item].size > 1
+    }));
+
+    res.json({ success: true, data: finalData });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // --- Management Inventory Routes ---
 
 // Get all inventory items
@@ -688,6 +746,57 @@ router.get('/export-excel', async (req, res) => {
           { header: 'Notes', key: 'notes', width: 30 }
         ];
         break;
+      case 'purchase-summary':
+        const summaryStart = new Date(fromDate);
+        const summaryEnd = new Date(toDate);
+        summaryEnd.setHours(23, 59, 59, 999);
+        const summaryLines = await PurchaseLine.aggregate([
+          {
+            $lookup: {
+              from: 'purchaseheaders',
+              localField: 'purchaseHeader',
+              foreignField: '_id',
+              as: 'header'
+            }
+          },
+          { $unwind: '$header' },
+          {
+            $match: {
+              'header.date': { $gte: summaryStart, $lte: summaryEnd }
+            }
+          },
+          {
+            $project: {
+              date: '$header.date',
+              item: '$item',
+              quantity: '$quantity',
+              unitPrice: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$rate', '$quantity'] }, 0] },
+              _id: 0
+            }
+          },
+          { $sort: { date: -1, item: 1 } }
+        ]);
+
+        const summaryItemPrices = {};
+        summaryLines.forEach(line => {
+          if (!summaryItemPrices[line.item]) summaryItemPrices[line.item] = new Set();
+          summaryItemPrices[line.item].add(Number(line.unitPrice.toFixed(2)));
+        });
+
+        data = summaryLines.map(line => ({
+          ...line,
+          date: new Date(line.date).toLocaleDateString(),
+          priceChanged: summaryItemPrices[line.item].size > 1 ? 'Yes' : 'No'
+        }));
+
+        columns = [
+          { header: 'Date', key: 'date', width: 15 },
+          { header: 'Item', key: 'item', width: 25 },
+          { header: 'Quantity', key: 'quantity', width: 12 },
+          { header: 'Unit Price', key: 'unitPrice', width: 15 },
+          { header: 'Price Changed', key: 'priceChanged', width: 15 }
+        ];
+        break;
       case 'pnl-simple':
       case 'pnl-detailed':
         const start = new Date(fromDate);
@@ -737,7 +846,7 @@ router.get('/export-excel', async (req, res) => {
     sheet.columns = columns;
     
     // Add data rows
-    if (type.startsWith('pnl-')) {
+    if (type.startsWith('pnl-') || type === 'purchase-summary') {
       data.forEach(item => sheet.addRow(item));
     } else {
       data.forEach(item => {
@@ -794,7 +903,7 @@ router.post('/inventory', async (req, res) => {
   try {
     const { item, category, unit, openingStock, usedQty, closingStock } = req.body;
     
-    let inventoryItem = await ManagementInventory.findOne({ item });
+    let inventoryItem = await ManagementInventory.findOne({ item: { $regex: new RegExp(`^${item.trim()}$`, 'i') } });
     
     if (inventoryItem) {
       // Update existing
@@ -807,7 +916,7 @@ router.post('/inventory', async (req, res) => {
       } else {
         // Calculate closing stock if not overridden
         // Closing = Opening + Purchased - Used
-        inventoryItem.closingStock = (inventoryItem.openingStock || 0) + (inventoryItem.purchasedQty || 0) - (usedQty || 0);
+        inventoryItem.closingStock = (inventoryItem.openingStock || 0) + (inventoryItem.purchasedQty || 0) - (inventoryItem.usedQty || 0);
       }
       await inventoryItem.save();
     } else {
@@ -835,7 +944,7 @@ router.put('/inventory/threshold', async (req, res) => {
   try {
     const { item, threshold } = req.body;
     const inventoryItem = await ManagementInventory.findOneAndUpdate(
-      { item },
+      { item: { $regex: new RegExp(`^${item.trim()}$`, 'i') } },
       { threshold },
       { new: true, upsert: true }
     );
@@ -978,11 +1087,13 @@ router.post('/parse-invoice', async (req, res) => {
         const rate = Number(row.getCell(3).value);
 
         if (item && !isNaN(quantity) && !isNaN(rate)) {
+          const totalAmount = rate; // The 'rate' column in Excel is treated as Total Amount
           items.push({
             item: String(item).trim(),
             quantity,
-            rate,
-            total: quantity * rate
+            rate: totalAmount, // Stored as 'rate' in PurchaseLine model
+            unitPrice: quantity > 0 ? (totalAmount / quantity) : 0,
+            total: totalAmount
           });
         }
       }
@@ -993,6 +1104,13 @@ router.post('/parse-invoice', async (req, res) => {
     res.status(500).json({ message: 'Failed to parse Excel file: ' + error.message });
   }
 });
+
+// Normalization function to handle spelling variations (double letters, non-alphanumeric)
+const normalizeItemName = (name) => {
+  return name.toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/(.)\1+/g, '$1');
+};
 
 // Confirm and save invoice items, update inventory
 router.post('/confirm-invoice', async (req, res) => {
@@ -1007,6 +1125,7 @@ router.post('/confirm-invoice', async (req, res) => {
     if (!header) throw new Error('Purchase header not found');
 
     const createdLines = [];
+    const allInventory = await ManagementInventory.find({});
 
     for (const itemData of items) {
       // 1. Create Purchase Line
@@ -1020,8 +1139,9 @@ router.post('/confirm-invoice', async (req, res) => {
       await newLine.save();
       createdLines.push(newLine);
 
-      // 2. Update Management Inventory
-      let inventoryItem = await ManagementInventory.findOne({ item: itemData.item });
+      // 2. Update Management Inventory with normalization check
+      const normInput = normalizeItemName(itemData.item);
+      let inventoryItem = allInventory.find(inv => normalizeItemName(inv.item) === normInput);
       
       if (inventoryItem) {
         // Increment purchasedQty and recalculate closingStock
@@ -1042,6 +1162,7 @@ router.post('/confirm-invoice', async (req, res) => {
           createdBy: req.user.id
         });
         await newInventory.save();
+        allInventory.push(newInventory); // Update local list to avoid duplicates in same batch
       }
     }
 
