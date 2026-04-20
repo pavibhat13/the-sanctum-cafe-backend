@@ -18,12 +18,68 @@ const { authenticateToken, requireAdmin } = require('../middleware/auth');
 // Apply admin protection to all management routes
 router.use(authenticateToken, requireAdmin);
 
+// Helper function to normalize item names
+const normalizeItemName = (name) => {
+  return name.toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/(.)\1+/g, '$1');
+};
+
+// Helper function to update inventory stock for an item
+const updateInventoryStock = async (itemName, quantityChange, userId) => {
+  const normInput = normalizeItemName(itemName);
+  const allInventory = await ManagementInventory.find({});
+  let inventoryItem = allInventory.find(inv => normalizeItemName(inv.item) === normInput);
+  
+  if (inventoryItem) {
+    inventoryItem.purchasedQty = (inventoryItem.purchasedQty || 0) + quantityChange;
+    inventoryItem.closingStock = (inventoryItem.openingStock || 0) + inventoryItem.purchasedQty - (inventoryItem.usedQty || 0);
+    await inventoryItem.save();
+  } else if (quantityChange > 0) {
+    // Only create new inventory item if quantity is positive (adding items)
+    const newInventory = new ManagementInventory({
+      item: itemName,
+      category: 'Other',
+      unit: 'Pkt',
+      openingStock: 0,
+      purchasedQty: quantityChange,
+      usedQty: 0,
+      closingStock: quantityChange,
+      createdBy: userId
+    });
+    await newInventory.save();
+  }
+};
+
+// Helper function to create date range query
+const getDateRangeQuery = (fromDate, toDate) => {
+  if (!fromDate && !toDate) return null;
+  const dateQuery = {};
+  if (fromDate) {
+    const start = new Date(fromDate);
+    start.setHours(0, 0, 0, 0);
+    dateQuery.$gte = start;
+  }
+  if (toDate) {
+    const end = new Date(toDate);
+    end.setHours(23, 59, 59, 999);
+    dateQuery.$lte = end;
+  }
+  return dateQuery;
+};
+
 // --- Daily Sales Routes ---
 
-// Get all daily sales entries
+// Get all daily sales entries with filtering
 router.get('/daily-sales', async (req, res) => {
   try {
-    const sales = await DailySales.find().sort({ date: -1 });
+    const { fromDate, toDate } = req.query;
+    let query = {};
+    const dateQuery = getDateRangeQuery(fromDate, toDate);
+    if (dateQuery) {
+      query.date = dateQuery;
+    }
+    const sales = await DailySales.find(query).sort({ date: -1 });
     res.json(sales);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -35,8 +91,15 @@ router.post('/daily-sales', async (req, res) => {
   try {
     const { date, cash, upi, swiggy, zomato, notes } = req.body;
     
-    // Check if entry for this date already exists
-    const existingEntry = await DailySales.findOne({ date: new Date(date) });
+    // Check if entry for this date already exists (any time on that day)
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const existingEntry = await DailySales.findOne({ 
+      date: { $gte: startOfDay, $lte: endOfDay } 
+    });
     if (existingEntry) {
       return res.status(400).json({ message: 'Sales entry for this date already exists' });
     }
@@ -69,9 +132,14 @@ router.put('/daily-sales/:id', async (req, res) => {
     
     if (date !== undefined) {
       const newDate = new Date(date);
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+
       // Check if another entry for this date already exists
       const existingEntry = await DailySales.findOne({ 
-        date: newDate,
+        date: { $gte: startOfDay, $lte: endOfDay },
         _id: { $ne: req.params.id }
       });
       if (existingEntry) {
@@ -107,10 +175,18 @@ router.delete('/daily-sales/:id', async (req, res) => {
 
 // --- Purchase Header Routes ---
 
-// Get all purchase headers
+// Get all purchase headers with filtering
 router.get('/purchase-headers', async (req, res) => {
   try {
-    const headers = await PurchaseHeader.find().sort({ date: -1 });
+    const { fromDate, toDate, vendor } = req.query;
+    let query = {};
+    const dateQuery = getDateRangeQuery(fromDate, toDate);
+    if (dateQuery) {
+      query.date = dateQuery;
+    }
+    if (vendor) query.vendor = vendor;
+
+    const headers = await PurchaseHeader.find(query).sort({ date: -1 });
     res.json(headers);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -163,17 +239,41 @@ router.delete('/purchase-headers/:id', async (req, res) => {
 
 // --- Purchase Line Routes ---
 
-// Get all purchase lines
+// Get all purchase lines with filtering and newest first
 router.get('/purchase-lines', async (req, res) => {
   try {
-    const { billNo } = req.query;
+    const { billNo, fromDate, toDate } = req.query;
     let query = {};
+    
     if (billNo) {
       const header = await PurchaseHeader.findOne({ billNo });
-      if (header) query.purchaseHeader = header._id;
+      if (header) {
+        query.purchaseHeader = header._id;
+      } else {
+        // If billNo is provided but not found, return empty results
+        return res.json([]);
+      }
     }
     
-    const lines = await PurchaseLine.find(query).populate('purchaseHeader', 'billNo vendor');
+    const dateQuery = getDateRangeQuery(fromDate, toDate);
+    if (dateQuery) {
+      // Find all headers in the date range
+      const matchingHeaders = await PurchaseHeader.find({ date: dateQuery }).select('_id');
+      const headerIds = matchingHeaders.map(h => h._id);
+      
+      if (query.purchaseHeader) {
+        // If we already have a purchaseHeader from billNo, we must check if it's in the date range
+        if (!headerIds.some(id => id.equals(query.purchaseHeader))) {
+          return res.json([]);
+        }
+      } else {
+        query.purchaseHeader = { $in: headerIds };
+      }
+    }
+    
+    const lines = await PurchaseLine.find(query)
+      .populate('purchaseHeader', 'billNo vendor date')
+      .sort({ createdAt: -1 });
     res.json(lines);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -192,6 +292,10 @@ router.post('/purchase-lines', async (req, res) => {
         createdBy: req.user.id
       });
       const savedLine = await newLine.save();
+      
+      // Update inventory stock
+      await updateInventoryStock(savedLine.item, savedLine.quantity, req.user.id);
+      
       savedLines.push(savedLine);
     }
 
@@ -207,6 +311,9 @@ router.put('/purchase-lines/:id', async (req, res) => {
     const line = await PurchaseLine.findById(req.params.id);
     if (!line) return res.status(404).json({ message: 'Line not found' });
 
+    const oldQuantity = line.quantity;
+    const oldItem = line.item;
+
     const { purchaseHeader, item, quantity, rate } = req.body;
     if (purchaseHeader !== undefined) line.purchaseHeader = purchaseHeader;
     if (item !== undefined) line.item = item;
@@ -214,6 +321,15 @@ router.put('/purchase-lines/:id', async (req, res) => {
     if (rate !== undefined) line.rate = rate;
 
     const savedLine = await line.save();
+
+    // If item or quantity changed, update inventory
+    if (item !== undefined || quantity !== undefined) {
+      // Reverse old quantity
+      await updateInventoryStock(oldItem, -oldQuantity, req.user.id);
+      // Apply new quantity
+      await updateInventoryStock(savedLine.item, savedLine.quantity, req.user.id);
+    }
+
     res.json(savedLine);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -223,8 +339,13 @@ router.put('/purchase-lines/:id', async (req, res) => {
 // Delete purchase line
 router.delete('/purchase-lines/:id', async (req, res) => {
   try {
-    const line = await PurchaseLine.findByIdAndDelete(req.params.id);
+    const line = await PurchaseLine.findById(req.params.id);
     if (!line) return res.status(404).json({ message: 'Line not found' });
+
+    // Update inventory stock (reverse the quantity)
+    await updateInventoryStock(line.item, -line.quantity, req.user.id);
+
+    await PurchaseLine.findByIdAndDelete(req.params.id);
     res.json({ message: 'Line deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -233,10 +354,18 @@ router.delete('/purchase-lines/:id', async (req, res) => {
 
 // --- Online Settlement Routes ---
 
-// Get all online settlements
+// Get all online settlements with filtering
 router.get('/online-settlements', async (req, res) => {
   try {
-    const settlements = await OnlineSettlement.find().sort({ paymentDate: -1 });
+    const { fromDate, toDate, platform } = req.query;
+    let query = {};
+    const dateQuery = getDateRangeQuery(fromDate, toDate);
+    if (dateQuery) {
+      query.paymentDate = dateQuery;
+    }
+    if (platform) query.platform = platform;
+
+    const settlements = await OnlineSettlement.find(query).sort({ paymentDate: -1 });
     res.json(settlements);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -284,10 +413,18 @@ router.delete('/online-settlements/:id', async (req, res) => {
 
 // --- Expense Routes ---
 
-// Get all expenses
+// Get all expenses with filtering
 router.get('/expenses', async (req, res) => {
   try {
-    const expenses = await Expense.find().sort({ date: -1 });
+    const { fromDate, toDate, category } = req.query;
+    let query = {};
+    const dateQuery = getDateRangeQuery(fromDate, toDate);
+    if (dateQuery) {
+      query.date = dateQuery;
+    }
+    if (category) query.category = category;
+
+    const expenses = await Expense.find(query).sort({ date: -1 });
     res.json(expenses);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -336,10 +473,17 @@ router.delete('/expenses/:id', async (req, res) => {
 
 // --- Salary Routes ---
 
-// Get all salaries
+// Get all salary payments with filtering
 router.get('/salaries', async (req, res) => {
   try {
-    const salaries = await Salary.find()
+    const { fromDate, toDate } = req.query;
+    let query = {};
+    const dateQuery = getDateRangeQuery(fromDate, toDate);
+    if (dateQuery) {
+      query.date = dateQuery;
+    }
+    
+    const salaries = await Salary.find(query)
       .populate('employee', 'username email')
       .sort({ date: -1 });
     res.json(salaries);
@@ -1064,6 +1208,72 @@ router.get('/dashboard-stats', async (req, res) => {
   }
 });
 
+// Bulk upload inventory items from Excel
+router.post('/inventory/bulk-upload', async (req, res) => {
+  try {
+    const { fileData } = req.body;
+    if (!fileData) return res.status(400).json({ message: 'No file data provided' });
+
+    const buffer = Buffer.from(fileData.split(',')[1] || fileData, 'base64');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    
+    const worksheet = workbook.getWorksheet(1);
+    const addedItems = [];
+    const skippedItems = [];
+
+    const allowedCategories = ['Food Raw Material', 'Vegetables', 'Flour/Other', 'Packaging', 'Other'];
+    const existingItems = await ManagementInventory.find({});
+    const normalizedExistingNames = existingItems.map(inv => normalizeItemName(inv.item));
+
+    // Format: Row 1 is header. Col 1: Name, Col 2: Category, Col 3: Unit, Col 4: Threshold
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber > 1) {
+        const name = row.getCell(1).value;
+        const category = row.getCell(2).value;
+        const unit = row.getCell(3).value || 'Pkt';
+        const threshold = Number(row.getCell(4).value) || 0;
+
+        if (name) {
+          const itemName = String(name).trim();
+          const normName = normalizeItemName(itemName);
+
+          if (!normalizedExistingNames.includes(normName)) {
+            let itemCategory = String(category).trim();
+            if (!allowedCategories.includes(itemCategory)) {
+              itemCategory = 'Other';
+            }
+
+            addedItems.push({
+              item: itemName,
+              category: itemCategory,
+              unit: String(unit).trim(),
+              threshold,
+              createdBy: req.user.id
+            });
+            normalizedExistingNames.push(normName);
+          } else {
+            skippedItems.push(itemName);
+          }
+        }
+      }
+    });
+
+    if (addedItems.length > 0) {
+      await ManagementInventory.insertMany(addedItems);
+    }
+
+    res.json({ 
+      success: true, 
+      message: `${addedItems.length} items added successfully. ${skippedItems.length} items skipped (already exist).`,
+      addedCount: addedItems.length,
+      skippedCount: skippedItems.length
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to process bulk upload: ' + error.message });
+  }
+});
+
 // --- Invoice Reading & Automation Routes ---
 
 // Parse Excel invoice from base64 string
@@ -1105,13 +1315,6 @@ router.post('/parse-invoice', async (req, res) => {
   }
 });
 
-// Normalization function to handle spelling variations (double letters, non-alphanumeric)
-const normalizeItemName = (name) => {
-  return name.toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
-    .replace(/(.)\1+/g, '$1');
-};
-
 // Confirm and save invoice items, update inventory
 router.post('/confirm-invoice', async (req, res) => {
   try {
@@ -1124,8 +1327,15 @@ router.post('/confirm-invoice', async (req, res) => {
     const header = await PurchaseHeader.findById(purchaseHeaderId);
     if (!header) throw new Error('Purchase header not found');
 
+    // Validation: Header totalAmount must match sum of item rates
+    const totalLinesAmount = items.reduce((sum, item) => sum + (Number(item.rate) || 0), 0);
+    if (Math.abs(header.totalAmount - totalLinesAmount) > 0.01) {
+      return res.status(400).json({ 
+        message: `Validation Failed: Total bill amount (${header.totalAmount}) does not match the sum of items (${totalLinesAmount.toFixed(2)})` 
+      });
+    }
+
     const createdLines = [];
-    const allInventory = await ManagementInventory.find({});
 
     for (const itemData of items) {
       // 1. Create Purchase Line
@@ -1139,31 +1349,8 @@ router.post('/confirm-invoice', async (req, res) => {
       await newLine.save();
       createdLines.push(newLine);
 
-      // 2. Update Management Inventory with normalization check
-      const normInput = normalizeItemName(itemData.item);
-      let inventoryItem = allInventory.find(inv => normalizeItemName(inv.item) === normInput);
-      
-      if (inventoryItem) {
-        // Increment purchasedQty and recalculate closingStock
-        inventoryItem.purchasedQty = (inventoryItem.purchasedQty || 0) + itemData.quantity;
-        // Closing = Opening + Purchased - Used
-        inventoryItem.closingStock = (inventoryItem.openingStock || 0) + inventoryItem.purchasedQty - (inventoryItem.usedQty || 0);
-        await inventoryItem.save();
-      } else {
-        // Optionally create new inventory item if it doesn't exist
-        const newInventory = new ManagementInventory({
-          item: itemData.item,
-          category: 'Other', // Default
-          unit: 'Pkt',
-          openingStock: 0,
-          purchasedQty: itemData.quantity,
-          usedQty: 0,
-          closingStock: itemData.quantity,
-          createdBy: req.user.id
-        });
-        await newInventory.save();
-        allInventory.push(newInventory); // Update local list to avoid duplicates in same batch
-      }
+      // 2. Update Management Inventory
+      await updateInventoryStock(itemData.item, itemData.quantity, req.user.id);
     }
 
     res.json({ success: true, message: `${createdLines.length} items processed successfully`, data: createdLines });
